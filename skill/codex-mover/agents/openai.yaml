@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Mover"
+  short_description: "Move Codex data off a full C: drive to another disk, with backup"
+  default_prompt: "Use $codex-mover to migrate my Codex data from C: to another drive."

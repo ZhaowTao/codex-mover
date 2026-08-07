@@ -1,0 +1,14 @@
+# Generated test fixtures
+work/migtest/sources*/
+work/migtest/target*/
+
+# Nested skill repository (kept as its own git repo)
+codex-mover-skill/
+
+# Logs and temporary files
+*.log
+_backup-*/
+
+# OS / editor noise
+Thumbs.db
+.DS_Store
