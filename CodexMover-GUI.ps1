@@ -42,6 +42,10 @@ $script:running = $false
 $script:IsRestore = $false
 $script:IsDryRun = $false
 $script:EngineProcess = $null
+$script:EnginePS = $null
+$script:EngineAsync = $null
+$script:EngineTimer = $null
+$script:DebugLog = Join-Path $env:TEMP 'codexmover-debug.log'
 $script:ControlNames = @(
     'SrcList','TxtCustom','BtnRefresh','BtnAdd',
     'DriveCombo','FolderBox','LblRoot',
@@ -49,6 +53,16 @@ $script:ControlNames = @(
     'BtnGo','BtnRestore','BtnExit',
     'LogBox','StatusText','StatusChip','ProgressBar'
 )
+
+function Write-DebugLog {
+    param([string]$Message)
+    try {
+        Add-Content -LiteralPath $script:DebugLog -Value ('{0}  {1}' -f (Get-Date -Format 'HH:mm:ss.fff'), $Message) -Encoding UTF8
+    } catch { }
+}
+
+try { Clear-Content -LiteralPath $script:DebugLog -ErrorAction SilentlyContinue } catch { }
+Write-DebugLog ('GUI v1.2.0 start (SelfTest={0} TestMode={1})' -f $SelfTest, $TestMode)
 
 function Get-DefaultSources {
     $specs = @(
@@ -106,6 +120,7 @@ function Load-Window {
         $stream.Close()
     }
     if (-not $script:Window) { throw 'XAML 加载失败: XamlReader 返回空对象' }
+    Write-DebugLog 'XAML loaded'
     foreach ($n in $script:ControlNames) {
         $ctl = $script:Window.FindName($n)
         if (-not $ctl) { throw "XAML 缺少控件: $n" }
@@ -215,6 +230,7 @@ function Build-SourcesFile {
 
 function Complete-Run {
     param([int]$ExitCode)
+    Write-DebugLog ("Complete-Run called, code={0}" -f $ExitCode)
     $script:running = $false
     Set-ControlsEnabled $true
     Set-ProgressState $false
@@ -233,55 +249,62 @@ function Invoke-EngineAsync {
     param([string]$ArgumentList)
     Append-Log ''
     Append-Log ('> codex-mover.ps1 ' + $ArgumentList)
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = 'powershell.exe'
-    $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $script:EnginePath + '" ' + $ArgumentList
-    $psi.UseShellExecute = $false
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.CreateNoWindow = $true
-    $proc = New-Object System.Diagnostics.Process
-    $proc.StartInfo = $psi
-    $proc.EnableRaisingEvents = $true
-    $outEvt = {
-        param($s, $e)
-        try {
-            if ($e.Data) { Append-Log $e.Data }
-        } catch { }
-    }
-    $errEvt = {
-        param($s, $e)
-        try {
-            if ($e.Data) { Append-Log ('[ERR] ' + $e.Data) }
-        } catch { }
-    }
-    $exitEvt = {
-        try {
-            $code = -1
-            try {
-                $proc.WaitForExit()
-                $code = $proc.ExitCode
-            } catch {
-                $code = -1
-            }
-            if ($script:Window) {
-                $script:Window.Dispatcher.Invoke([Action[int]]{
-                    param($c)
-                    Complete-Run -ExitCode $c
-                }, $code) | Out-Null
-            }
-        } catch { }
-    }
-    $proc.add_OutputDataReceived($outEvt)
-    $proc.add_ErrorDataReceived($errEvt)
-    $proc.add_Exited($exitEvt)
+    # Run the engine inside this process (PowerShell runspace) instead of
+    # spawning a hidden powershell.exe child. Spawning hidden child processes
+    # with redirected IO can be blocked/killed by security software on some
+    # machines, which caused the GUI window to vanish. A runspace streams the
+    # engine output asynchronously without any child process.
     try {
-        $script:EngineProcess = $proc
-        [void]$proc.Start()
-        $proc.BeginOutputReadLine()
-        $proc.BeginErrorReadLine()
+        $engineScript = "& '" + $script:EnginePath + "' " + $ArgumentList
+        $ps = [System.Management.Automation.PowerShell]::Create()
+        [void]$ps.AddScript($engineScript)
+        $infoHandler = {
+            param($sender, $e)
+            try {
+                $item = $sender[$e.Index]
+                if ($item -and $item.MessageData) { Append-Log ([string]$item.MessageData) }
+            } catch { }
+        }
+        $errHandler = {
+            param($sender, $e)
+            try {
+                $item = $sender[$e.Index]
+                if ($item) { Append-Log ('[ERR] ' + $item.ToString()) }
+            } catch { }
+        }
+        $ps.Streams.Information.add_DataAdded($infoHandler)
+        $ps.Streams.Error.add_DataAdded($errHandler)
+        $script:EnginePS = $ps
+        $script:EngineAsync = $ps.BeginInvoke()
+        Write-DebugLog 'engine started (in-process runspace)'
+        $timer = New-Object System.Windows.Threading.DispatcherTimer
+        $timer.Interval = [TimeSpan]::FromMilliseconds(250)
+        $timer.Add_Tick({
+            if ($script:EngineAsync -and $script:EngineAsync.IsCompleted) {
+                $timer.Stop()
+                $code = 0
+                try {
+                    $null = $script:EnginePS.EndInvoke($script:EngineAsync)
+                } catch {
+                    $code = 1
+                    Append-Log ('[ERR] 引擎异常: ' + $_.Exception.Message)
+                    Write-DebugLog ('engine EXCEPTION: ' + $_.Exception.Message)
+                }
+                # engine uses `exit N` for failures; derive the outcome from its summary too
+                $logTail = ''
+                if ($script:LogBox) { $logTail = $script:LogBox.Text }
+                if ($logTail -match 'Some items failed|FAILED:|ABORT:') { $code = 1 }
+                elseif ($logTail -match 'All done\.|Dry run - no changes were made\.') { $code = 0 }
+                Write-DebugLog ("engine finished, code={0}" -f $code)
+                $script:EngineAsync = $null
+                Complete-Run -ExitCode $code
+            }
+        })
+        $timer.Start()
+        $script:EngineTimer = $timer
     } catch {
         Append-Log ('启动失败: ' + $_.Exception.Message)
+        Write-DebugLog ('engine start FAILED: ' + $_.Exception.Message)
         Set-Status '未完成，请查看日志' 'err'
         Set-ControlsEnabled $true
         Set-ProgressState $false
@@ -292,6 +315,7 @@ function Invoke-EngineAsync {
 function Start-Migration {
     param([bool]$AsRestore)
     try {
+        Write-DebugLog ("click start (restore={0})" -f $AsRestore)
         if ($script:running) { return }
         if (-not (Test-Path -LiteralPath $script:EnginePath)) {
             [System.Windows.MessageBox]::Show('找不到引擎脚本 codex-mover.ps1', '错误', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error) | Out-Null
@@ -330,12 +354,14 @@ function Start-Migration {
 
         $script:IsRestore = $AsRestore
         $script:IsDryRun = [bool]$script:CbDryRun.IsChecked
+        Write-DebugLog ("engine args: {0}" -f $args)
         $script:running = $true
         Set-ControlsEnabled $false
         Set-ProgressState $true
         Set-Status '运行中…' 'run'
         Invoke-EngineAsync -ArgumentList $args
     } catch {
+        Write-DebugLog ('Start-Migration EXCEPTION: ' + $_.Exception.Message)
         $script:running = $false
         try { Set-ControlsEnabled $true } catch { }
         try { Set-ProgressState $false } catch { }
@@ -383,6 +409,7 @@ if ($SelfTest) {
 try {
     Load-Window
 } catch {
+    Write-DebugLog ('main Load-Window EXCEPTION: ' + $_.Exception.Message)
     [System.Windows.MessageBox]::Show('GUI 初始化失败: ' + $_.Exception.Message, '错误', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error) | Out-Null
     exit 1
 }
@@ -392,6 +419,7 @@ try {
     [System.Windows.Application]::Current.add_DispatcherUnhandledException({
         param($s, $e)
         try {
+            Write-DebugLog ('UI EXCEPTION: ' + $e.Exception.Message)
             $log = Join-Path $env:TEMP ('codexmover-crash-{0}.log' -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
             Add-Content -LiteralPath $log -Value ('UI EXCEPTION: ' + $e.Exception.ToString()) -Encoding UTF8
             [System.Windows.MessageBox]::Show('界面遇到错误，详情已保存到: ' + $log, 'Codex Mover', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error) | Out-Null
@@ -403,6 +431,7 @@ try {
     [AppDomain]::CurrentDomain.add_UnhandledException({
         param($s, $e)
         try {
+            Write-DebugLog ('FATAL EXCEPTION: ' + $e.ExceptionObject.ToString())
             $log = Join-Path $env:TEMP ('codexmover-crash-{0}.log' -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
             Add-Content -LiteralPath $log -Value ('FATAL: ' + $e.ExceptionObject.ToString()) -Encoding UTF8
         } catch { }
@@ -411,7 +440,7 @@ try {
 
 $script:BtnGo.Add_Click({ Start-Migration -AsRestore $false })
 $script:BtnRestore.Add_Click({ Start-Migration -AsRestore $true })
-$script:BtnExit.Add_Click({ $script:Window.Close() })
+$script:BtnExit.Add_Click({ Write-DebugLog 'BtnExit clicked'; $script:Window.Close() })
 $script:BtnRefresh.Add_Click({ Refresh-Sources })
 $script:BtnAdd.Add_Click({
     $p = $script:TxtCustom.Text.Trim()
@@ -434,9 +463,11 @@ $script:DriveCombo.Add_SelectionChanged({ Update-RootPreview })
 $script:FolderBox.Add_TextChanged({ Update-RootPreview })
 $script:Window.Add_Closing({
     param($s, $e)
+    Write-DebugLog ("closing event, running={0}" -f $script:running)
     if ($script:running) { $e.Cancel = $true }
 })
 $script:Window.Add_Loaded({ Init-UI })
 
 [void]$script:Window.ShowDialog()
+Write-DebugLog 'ShowDialog returned'
 exit 0
