@@ -6,7 +6,7 @@ set "SKILLSRC=%~dp0skill\codex-mover"
 set "SKILLDEST=%USERPROFILE%\.codex\skills\codex-mover"
 
 echo ================================================
-echo   Codex Mover v1.1.0 - installer
+echo   Codex Mover v1.2.0 - installer
 echo ================================================
 echo.
 echo Installing codex-mover skill to %SKILLDEST% ...

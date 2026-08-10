@@ -1,10 +1,18 @@
-﻿# Codex Mover
+﻿# Codex Mover · by Dawn
+
+![banner](assets/banner.png)
 
 便携版 Windows 工具 / Portable Windows tool
 
 把 Codex 的数据与工作区从爆满的 C 盘迁移到另一个盘（如 G 盘）。原路径保留为**目录联接（junction）**，Codex 无需任何配置即可继续工作。全程带备份、逐项校验与自动回滚。
 
 Move Codex data and workspace folders off a full C: drive to another drive. Original paths stay valid as directory junctions, so Codex keeps working without configuration changes. Every step is backed up, verified, and rolled back on failure.
+
+## 界面预览 / Screenshots
+
+| 主界面 / Main | 运行中 / Running | 完成 / Done |
+| --- | --- | --- |
+| ![main](assets/screenshot-main.png) | ![running](assets/screenshot-running.png) | ![done](assets/screenshot-done.png) |
 
 ## 迁移内容 / What gets moved
 
@@ -22,10 +30,12 @@ Move Codex data and workspace folders off a full C: drive to another drive. Orig
 
 ### 图形向导（推荐）/ GUI wizard
 
+WPF 图形向导（Dawn 极简深色界面，v1.2.0）:
+
 1. 完全退出 Codex（含系统托盘图标）。
 2. 双击 `CodexMover-GUI.cmd`。
 3. 勾选要迁移的目录、选择目标盘，按需勾选“自动关闭 Codex”，点击“开始迁移”。
-4. 看到完成提示后重新打开 Codex。
+4. 运行日志实时滚动，右上角状态徽章变绿“完成”后重新打开 Codex。
 
 ### 命令行 / Console
 
@@ -42,7 +52,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\codex-mover.ps1 -TargetRoo
 - 先复制到目标盘并校验（文件数、字节数、robocopy 反向对比），确认一致才动原目录。
 - 原目录先改名、后建联接；备份再次校验后才释放 C 盘副本。
 - 任何失败自动回滚；中断后可自动从备份修复缺失文件。
-- 日志保存在目标盘 `migration-<时间戳>.log`。
+- 运行日志保存在目标盘 `migration-<时间戳>.log`，GUI 内同步滚动显示。
 
 ## 验证 / Verify
 
@@ -64,7 +74,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\codex-mover.ps1 -TargetRoo
 - 或从 GitHub 用官方 skill-installer 安装（skill 仓库：`codex-mover-skill`）：
 
 ```text
-install-skill-from-github.py --repo <你的用户名>/codex-mover-skill --path codex-mover
+install-skill-from-github.py --repo ZhaowTao/codex-mover-skill --path codex-mover
 ```
 
 ## 注意事项 / Notes
@@ -73,6 +83,7 @@ install-skill-from-github.py --repo <你的用户名>/codex-mover-skill --path c
 - 目录联接是社区验证的通用方案；官方 App 尚未正式支持迁移（openai/codex issue #34070）。
 - 迁移后先保留 `G:\CodexData\_backup-*` 几天，确认稳定后再删除。
 - 迁移中断后可能出现 `*.pre-migration-*` 残留目录，不影响使用；重启后可删除，或由后续运行自动清理。
+- GUI 需要 Windows PowerShell 5.1 与 .NET Framework 4.x（Windows 10/11 自带）。
 
 ## 许可 / License
 

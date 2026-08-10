@@ -1,14 +1,54 @@
 ﻿#Requires -Version 5.0
+<#
+.SYNOPSIS
+  Codex Mover GUI (WPF, Dawn theme) - graphical wizard host.
+
+.DESCRIPTION
+  Loads CodexMover-GUI.xaml via XamlReader and drives the UI. All migration
+  logic stays in codex-mover.ps1 (the engine), which is invoked as a child
+  powershell.exe process; stdout/stderr are streamed back to the log box
+  asynchronously so the UI never freezes.
+
+  Behaviour is 1:1 with the v1.1.0 WinForms wizard:
+    - 5 default source folders + custom source paths
+    - target drive/folder with live preview
+    - backup / auto-close / dry-run options
+    - start / restore / exit actions
+    - controls disabled while running, window close blocked while running
+    - -SelfTest prints control/source/drive checks and exits
+
+.PARAMETER SelfTest
+  Print a baseline check (XAML load, controls, sources, drives) and exit.
+
+.PARAMETER TestMode
+  Testing/screenshot helper only: passes -SkipProcessCheck to the engine so
+  dry-run / migration tests can run while Codex is open. Never used by end users.
+#>
 param(
-    [switch]$SelfTest
+    [switch]$SelfTest,
+    [switch]$TestMode
 )
 
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName PresentationFramework
+Add-Type -AssemblyName PresentationCore
+Add-Type -AssemblyName WindowsBase
+Add-Type -AssemblyName System.Xaml
 
-$script:Version = '1.1.0'
+$script:Version = '1.2.0'
 $script:EnginePath = Join-Path $PSScriptRoot 'codex-mover.ps1'
+$script:XamlPath = Join-Path $PSScriptRoot 'CodexMover-GUI.xaml'
+$script:Window = $null
 $script:running = $false
+$script:IsRestore = $false
+$script:IsDryRun = $false
+$script:EngineProcess = $null
+$script:ControlNames = @(
+    'SrcList','TxtCustom','BtnRefresh','BtnAdd',
+    'DriveCombo','FolderBox','LblRoot',
+    'CbBackup','CbAutoClose','CbDryRun',
+    'BtnGo','BtnRestore','BtnExit',
+    'LogBox','StatusText','StatusChip','ProgressBar'
+)
 
 function Get-DefaultSources {
     $specs = @(
@@ -39,7 +79,6 @@ function Get-DefaultSources {
             SizeMB = $sizeMB
             Label = ('{0}   [{1}]' -f $s.Path, $state)
         }
-        $obj | Add-Member -Force -MemberType ScriptMethod -Name ToString -Value { $this.Label }
         $result += $obj
     }
     return $result
@@ -56,204 +95,141 @@ function Get-FixedDrives {
     })
 }
 
-if ($SelfTest) {
-    Write-Host ('Codex Mover GUI v{0} - self test' -f $script:Version)
-    Write-Host ('Engine: {0}  exists={1}' -f $script:EnginePath, (Test-Path -LiteralPath $script:EnginePath))
-    Write-Host 'Sources:'
-    foreach ($s in (Get-DefaultSources)) { Write-Host ('  {0}  exists={1} junction={2} size={3}' -f $s.Path, $s.Exists, $s.IsJunction, $s.SizeMB) }
-    Write-Host 'Drives:'
-    foreach ($d in (Get-FixedDrives)) { Write-Host ('  {0}  free {1} GB / {2} GB' -f $d.Root, $d.FreeGB, $d.TotalGB) }
-    Write-Host 'Self test OK.'
-    exit 0
+function Load-Window {
+    if (-not (Test-Path -LiteralPath $script:XamlPath)) {
+        throw "找不到界面文件: $($script:XamlPath)"
+    }
+    $stream = [System.IO.File]::OpenRead($script:XamlPath)
+    try {
+        $script:Window = [System.Windows.Markup.XamlReader]::Load($stream)
+    } finally {
+        $stream.Close()
+    }
+    if (-not $script:Window) { throw 'XAML 加载失败: XamlReader 返回空对象' }
+    foreach ($n in $script:ControlNames) {
+        $ctl = $script:Window.FindName($n)
+        if (-not $ctl) { throw "XAML 缺少控件: $n" }
+        Set-Variable -Name $n -Value $ctl -Scope Script
+    }
+    $iconPath = Join-Path $PSScriptRoot 'assets\app-icon.ico'
+    if (Test-Path -LiteralPath $iconPath) {
+        try {
+            $uri = New-Object System.Uri($iconPath, [System.UriKind]::Absolute)
+            $bi = New-Object System.Windows.Media.Imaging.BitmapImage
+            $bi.BeginInit()
+            $bi.UriSource = $uri
+            $bi.EndInit()
+            $script:Window.Icon = $bi
+        } catch {
+            # icon is cosmetic; ignore failures
+        }
+    }
 }
-
-[System.Windows.Forms.Application]::EnableVisualStyles()
-
-$form = New-Object System.Windows.Forms.Form
-$form.Text = ('Codex Mover 图形向导 v{0}' -f $script:Version)
-$form.Size = New-Object System.Drawing.Size(800, 700)
-$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
-$form.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 9)
-$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedSingle
-$form.MaximizeBox = $false
-
-# ---- 1. Sources ----
-$grpSrc = New-Object System.Windows.Forms.GroupBox
-$grpSrc.Text = '1. 选择要迁移的目录'
-$grpSrc.Location = New-Object System.Drawing.Point(12, 12)
-$grpSrc.Size = New-Object System.Drawing.Size(520, 250)
-$form.Controls.Add($grpSrc)
-
-$srcList = New-Object System.Windows.Forms.CheckedListBox
-$srcList.Location = New-Object System.Drawing.Point(12, 24)
-$srcList.Size = New-Object System.Drawing.Size(380, 160)
-$grpSrc.Controls.Add($srcList)
-
-$btnRefresh = New-Object System.Windows.Forms.Button
-$btnRefresh.Text = '刷新大小'
-$btnRefresh.Location = New-Object System.Drawing.Point(400, 24)
-$btnRefresh.Size = New-Object System.Drawing.Size(105, 30)
-$grpSrc.Controls.Add($btnRefresh)
-
-$txtCustom = New-Object System.Windows.Forms.TextBox
-$txtCustom.Location = New-Object System.Drawing.Point(12, 192)
-$txtCustom.Size = New-Object System.Drawing.Size(380, 24)
-$grpSrc.Controls.Add($txtCustom)
-
-$btnAdd = New-Object System.Windows.Forms.Button
-$btnAdd.Text = '添加自定义目录'
-$btnAdd.Location = New-Object System.Drawing.Point(400, 190)
-$btnAdd.Size = New-Object System.Drawing.Size(105, 30)
-$grpSrc.Controls.Add($btnAdd)
-
-$lblSrcHint = New-Object System.Windows.Forms.Label
-$lblSrcHint.Text = '勾选要迁移的目录；已迁移的会显示"联接"，可取消勾选。'
-$lblSrcHint.Location = New-Object System.Drawing.Point(12, 222)
-$lblSrcHint.Size = New-Object System.Drawing.Size(496, 20)
-$grpSrc.Controls.Add($lblSrcHint)
-
-# ---- 2. Target ----
-$grpTgt = New-Object System.Windows.Forms.GroupBox
-$grpTgt.Text = '2. 选择目标位置'
-$grpTgt.Location = New-Object System.Drawing.Point(12, 270)
-$grpTgt.Size = New-Object System.Drawing.Size(520, 130)
-$form.Controls.Add($grpTgt)
-
-$lblDrive = New-Object System.Windows.Forms.Label
-$lblDrive.Text = '目标盘'
-$lblDrive.Location = New-Object System.Drawing.Point(12, 28)
-$lblDrive.Size = New-Object System.Drawing.Size(70, 24)
-$grpTgt.Controls.Add($lblDrive)
-
-$driveCombo = New-Object System.Windows.Forms.ComboBox
-$driveCombo.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
-$driveCombo.Location = New-Object System.Drawing.Point(90, 25)
-$driveCombo.Size = New-Object System.Drawing.Size(410, 26)
-$grpTgt.Controls.Add($driveCombo)
-
-$lblFolder = New-Object System.Windows.Forms.Label
-$lblFolder.Text = '文件夹'
-$lblFolder.Location = New-Object System.Drawing.Point(12, 62)
-$lblFolder.Size = New-Object System.Drawing.Size(70, 24)
-$grpTgt.Controls.Add($lblFolder)
-
-$folderBox = New-Object System.Windows.Forms.TextBox
-$folderBox.Text = 'CodexData'
-$folderBox.Location = New-Object System.Drawing.Point(90, 60)
-$folderBox.Size = New-Object System.Drawing.Size(410, 24)
-$grpTgt.Controls.Add($folderBox)
-
-$lblRoot = New-Object System.Windows.Forms.Label
-$lblRoot.Location = New-Object System.Drawing.Point(12, 96)
-$lblRoot.Size = New-Object System.Drawing.Size(496, 22)
-$grpTgt.Controls.Add($lblRoot)
-
-# ---- 3. Options ----
-$grpOpt = New-Object System.Windows.Forms.GroupBox
-$grpOpt.Text = '3. 选项'
-$grpOpt.Location = New-Object System.Drawing.Point(12, 408)
-$grpOpt.Size = New-Object System.Drawing.Size(520, 110)
-$form.Controls.Add($grpOpt)
-
-$cbBackup = New-Object System.Windows.Forms.CheckBox
-$cbBackup.Text = '保留完整备份（推荐）'
-$cbBackup.Checked = $true
-$cbBackup.Location = New-Object System.Drawing.Point(20, 30)
-$cbBackup.Size = New-Object System.Drawing.Size(220, 26)
-$grpOpt.Controls.Add($cbBackup)
-
-$cbAutoClose = New-Object System.Windows.Forms.CheckBox
-$cbAutoClose.Text = '自动关闭正在运行的 Codex'
-$cbAutoClose.Location = New-Object System.Drawing.Point(20, 62)
-$cbAutoClose.Size = New-Object System.Drawing.Size(240, 26)
-$grpOpt.Controls.Add($cbAutoClose)
-
-$cbDryRun = New-Object System.Windows.Forms.CheckBox
-$cbDryRun.Text = '演练模式（不修改任何东西）'
-$cbDryRun.Location = New-Object System.Drawing.Point(260, 30)
-$cbDryRun.Size = New-Object System.Drawing.Size(240, 26)
-$grpOpt.Controls.Add($cbDryRun)
-
-# ---- 4. Action buttons ----
-$btnGo = New-Object System.Windows.Forms.Button
-$btnGo.Text = '开始迁移'
-$btnGo.Location = New-Object System.Drawing.Point(548, 20)
-$btnGo.Size = New-Object System.Drawing.Size(220, 44)
-$btnGo.BackColor = [System.Drawing.Color]::FromArgb(46, 125, 50)
-$btnGo.ForeColor = [System.Drawing.Color]::White
-$form.Controls.Add($btnGo)
-
-$btnRestore = New-Object System.Windows.Forms.Button
-$btnRestore.Text = '回滚 / 恢复'
-$btnRestore.Location = New-Object System.Drawing.Point(548, 72)
-$btnRestore.Size = New-Object System.Drawing.Size(220, 40)
-$form.Controls.Add($btnRestore)
-
-$btnExit = New-Object System.Windows.Forms.Button
-$btnExit.Text = '退出'
-$btnExit.Location = New-Object System.Drawing.Point(548, 120)
-$btnExit.Size = New-Object System.Drawing.Size(220, 40)
-$form.Controls.Add($btnExit)
-
-# ---- 5. Log ----
-$lblLog = New-Object System.Windows.Forms.Label
-$lblLog.Text = '运行日志'
-$lblLog.Location = New-Object System.Drawing.Point(12, 528)
-$lblLog.Size = New-Object System.Drawing.Size(300, 20)
-$form.Controls.Add($lblLog)
-
-$logBox = New-Object System.Windows.Forms.TextBox
-$logBox.Multiline = $true
-$logBox.ReadOnly = $true
-$logBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
-$logBox.Location = New-Object System.Drawing.Point(12, 550)
-$logBox.Size = New-Object System.Drawing.Size(756, 100)
-$logBox.Font = New-Object System.Drawing.Font('Consolas', 9)
-$form.Controls.Add($logBox)
-
-$statusBar = New-Object System.Windows.Forms.Label
-$statusBar.Location = New-Object System.Drawing.Point(12, 655)
-$statusBar.Size = New-Object System.Drawing.Size(756, 22)
-$statusBar.Text = '就绪'
-$form.Controls.Add($statusBar)
-
-$script:srcList = $srcList
-$script:logBox = $logBox
 
 function Append-Log {
     param([string]$Text)
-    if ($script:logBox.IsHandleCreated) {
-        $script:logBox.Invoke([Action[string]]{
+    if (-not $script:LogBox) { return }
+    if ($script:LogBox.Dispatcher.CheckAccess()) {
+        $script:LogBox.AppendText($Text + [Environment]::NewLine)
+        $script:LogBox.ScrollToEnd()
+    } else {
+        $script:LogBox.Dispatcher.Invoke([Action[string]]{
             param($t)
-            $script:logBox.AppendText($t + [Environment]::NewLine)
-            $script:logBox.SelectionStart = $script:logBox.TextLength
-            $script:logBox.ScrollToCaret()
+            $script:LogBox.AppendText($t + [Environment]::NewLine)
+            $script:LogBox.ScrollToEnd()
         }, $Text) | Out-Null
     }
 }
 
 function Set-Status {
-    param([string]$Text)
-    $statusBar.Text = $Text
+    param([string]$Text, [string]$Kind = 'ok')
+    $map = @{ ok = 'SuccessBrush'; run = 'AccentBrush'; err = 'DangerBrush'; warn = 'WarnBrush' }
+    $key = if ($map.ContainsKey($Kind)) { $map[$Kind] } else { 'TextSecondaryBrush' }
+    $brush = $script:Window.TryFindResource($key)
+    if (-not $brush) { $brush = $script:Window.TryFindResource('TextSecondaryBrush') }
+    $chipBg = $brush.Clone()
+    $chipBg.Opacity = 0.18
+    $script:StatusText.Text = $Text
+    $script:StatusText.Foreground = $brush
+    $script:StatusChip.Background = $chipBg
+}
+
+function Set-ProgressState {
+    param([bool]$Visible)
+    $script:ProgressBar.Visibility = if ($Visible) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed }
 }
 
 function Update-RootPreview {
     $root = ''
-    if ($driveCombo.SelectedItem) { $root = $driveCombo.SelectedItem.Root.TrimEnd('\') }
-    $folder = $folderBox.Text.Trim()
-    if ($root -and $folder) { $lblRoot.Text = ('迁移目标: {0}\{1}' -f $root, $folder) } else { $lblRoot.Text = '迁移目标: (请选择盘符和文件夹)' }
+    if ($script:DriveCombo.SelectedItem) { $root = $script:DriveCombo.SelectedItem.Root.TrimEnd('\') }
+    $folder = $script:FolderBox.Text.Trim()
+    if ($root -and $folder) { $script:LblRoot.Text = ('迁移目标: {0}\{1}' -f $root, $folder) } else { $script:LblRoot.Text = '迁移目标: (请选择盘符和文件夹)' }
+}
+
+function New-SourceCheckBox {
+    param($Source, [bool]$Checked)
+    $cb = New-Object System.Windows.Controls.CheckBox
+    $cb.Content = $Source.Label
+    $cb.Tag = $Source
+    $cb.IsChecked = $Checked
+    $cb.FontSize = 13
+    $cb.Foreground = $script:Window.TryFindResource('TextPrimaryBrush')
+    $cb.Margin = New-Object System.Windows.Thickness(0, 4, 0, 4)
+    $cb.Cursor = [System.Windows.Input.Cursors]::Hand
+    return $cb
 }
 
 function Refresh-Sources {
-    $checkedPaths = @($script:srcList.CheckedItems | ForEach-Object { $_.Path })
-    $script:srcList.Items.Clear()
+    $checkedPaths = @($script:SrcList.Items | Where-Object { $_.IsChecked -eq $true } | ForEach-Object { $_.Tag.Path })
+    $script:SrcList.Items.Clear()
     foreach ($s in (Get-DefaultSources)) {
         $checked = ($checkedPaths -contains $s.Path) -or ($s.Exists -and -not $s.IsJunction)
-        $script:srcList.Items.Add($s, $checked) | Out-Null
+        [void]$script:SrcList.Items.Add((New-SourceCheckBox -Source $s -Checked $checked))
     }
 }
 
-function Invoke-Engine {
+function Set-ControlsEnabled {
+    param([bool]$Enabled)
+    $script:BtnGo.IsEnabled = $Enabled
+    $script:BtnRestore.IsEnabled = $Enabled
+    $script:BtnRefresh.IsEnabled = $Enabled
+    $script:BtnAdd.IsEnabled = $Enabled
+    $script:SrcList.IsEnabled = $Enabled
+    $script:DriveCombo.IsEnabled = $Enabled
+    $script:FolderBox.IsEnabled = $Enabled
+    $script:CbBackup.IsEnabled = $Enabled
+    $script:CbAutoClose.IsEnabled = $Enabled
+    $script:CbDryRun.IsEnabled = $Enabled
+}
+
+function Build-SourcesFile {
+    $map = @{}
+    foreach ($item in $script:SrcList.Items) {
+        if ($item.IsChecked -eq $true) { $map[$item.Tag.Path] = $item.Tag.Name }
+    }
+    if ($map.Count -eq 0) { return $null }
+    $jsonPath = Join-Path $env:TEMP ('codexmover-sources-{0}.json' -f $PID)
+    $map | ConvertTo-Json | Set-Content -LiteralPath $jsonPath -Encoding UTF8
+    return $jsonPath
+}
+
+function Complete-Run {
+    param([int]$ExitCode)
+    $script:running = $false
+    Set-ControlsEnabled $true
+    Set-ProgressState $false
+    if ($ExitCode -eq 0) {
+        Set-Status '完成' 'ok'
+        if (-not $script:IsRestore -and -not $script:IsDryRun) {
+            [System.Windows.MessageBox]::Show('迁移完成。可以重新打开 Codex 了。' + [Environment]::NewLine + '备份保留在目标盘 _backup-* 文件夹中。', '完成', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information) | Out-Null
+        }
+    } else {
+        Set-Status '未完成，请查看日志' 'err'
+        [System.Windows.MessageBox]::Show('迁移未完成（退出码 ' + $ExitCode + '）。' + [Environment]::NewLine + '数据没有丢失，请查看日志。', '注意', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning) | Out-Null
+    }
+}
+
+function Invoke-EngineAsync {
     param([string]$ArgumentList)
     Append-Log ''
     Append-Log ('> codex-mover.ps1 ' + $ArgumentList)
@@ -264,61 +240,53 @@ function Invoke-Engine {
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.CreateNoWindow = $true
-    try {
-        $proc = [System.Diagnostics.Process]::Start($psi)
-    } catch {
-        Append-Log ('启动失败: ' + $_.Exception.Message)
-        return 1
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    $proc.EnableRaisingEvents = $true
+    $outEvt = {
+        param($s, $e)
+        if ($e.Data) { Append-Log $e.Data }
     }
-    $outEvt = { param($s, $e) if ($e.Data) { Append-Log $e.Data } }
-    $errEvt = { param($s, $e) if ($e.Data) { Append-Log ('[ERR] ' + $e.Data) } }
+    $errEvt = {
+        param($s, $e)
+        if ($e.Data) { Append-Log ('[ERR] ' + $e.Data) }
+    }
+    $exitEvt = {
+        $code = $script:EngineProcess.ExitCode
+        $script:Window.Dispatcher.Invoke([Action[int]]{
+            param($c)
+            Complete-Run -ExitCode $c
+        }, $code) | Out-Null
+    }
     $proc.add_OutputDataReceived($outEvt)
     $proc.add_ErrorDataReceived($errEvt)
-    $proc.BeginOutputReadLine()
-    $proc.BeginErrorReadLine()
-    while (-not $proc.HasExited) {
-        [System.Windows.Forms.Application]::DoEvents()
-        Start-Sleep -Milliseconds 100
+    $proc.add_Exited($exitEvt)
+    try {
+        [void]$proc.Start()
+        $script:EngineProcess = $proc
+        $proc.BeginOutputReadLine()
+        $proc.BeginErrorReadLine()
+    } catch {
+        Append-Log ('启动失败: ' + $_.Exception.Message)
+        Set-Status '未完成，请查看日志' 'err'
+        Set-ControlsEnabled $true
+        Set-ProgressState $false
+        $script:running = $false
     }
-    $proc.WaitForExit()
-    return $proc.ExitCode
-}
-
-function Set-ControlsEnabled {
-    param([bool]$Enabled)
-    $btnGo.Enabled = $Enabled
-    $btnRestore.Enabled = $Enabled
-    $btnRefresh.Enabled = $Enabled
-    $btnAdd.Enabled = $Enabled
-    $srcList.Enabled = $Enabled
-    $driveCombo.Enabled = $Enabled
-    $folderBox.Enabled = $Enabled
-    $cbBackup.Enabled = $Enabled
-    $cbAutoClose.Enabled = $Enabled
-    $cbDryRun.Enabled = $Enabled
-}
-
-function Build-SourcesFile {
-    $map = @{}
-    foreach ($item in $script:srcList.CheckedItems) { $map[$item.Path] = $item.Name }
-    if ($map.Count -eq 0) { return $null }
-    $jsonPath = Join-Path $env:TEMP ('codexmover-sources-{0}.json' -f $PID)
-    $map | ConvertTo-Json | Set-Content -LiteralPath $jsonPath -Encoding UTF8
-    return $jsonPath
 }
 
 function Start-Migration {
     param([bool]$AsRestore)
     if ($script:running) { return }
     if (-not (Test-Path -LiteralPath $script:EnginePath)) {
-        [System.Windows.Forms.MessageBox]::Show('找不到引擎脚本 codex-mover.ps1', '错误', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+        [System.Windows.MessageBox]::Show('找不到引擎脚本 codex-mover.ps1', '错误', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error) | Out-Null
         return
     }
     $root = ''
-    if ($driveCombo.SelectedItem) { $root = $driveCombo.SelectedItem.Root.TrimEnd('\') }
-    $folder = $folderBox.Text.Trim()
+    if ($script:DriveCombo.SelectedItem) { $root = $script:DriveCombo.SelectedItem.Root.TrimEnd('\') }
+    $folder = $script:FolderBox.Text.Trim()
     if (-not $root -or -not $folder) {
-        [System.Windows.Forms.MessageBox]::Show('请先选择目标盘并填写文件夹名', '提示', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+        [System.Windows.MessageBox]::Show('请先选择目标盘并填写文件夹名', '提示', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning) | Out-Null
         return
     }
     $targetRoot = '{0}\{1}' -f $root, $folder
@@ -326,79 +294,106 @@ function Start-Migration {
     if (-not $AsRestore) {
         $jsonPath = Build-SourcesFile
         if (-not $jsonPath) {
-            [System.Windows.Forms.MessageBox]::Show('请至少勾选一个要迁移的目录', '提示', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+            [System.Windows.MessageBox]::Show('请至少勾选一个要迁移的目录', '提示', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning) | Out-Null
             return
         }
-        if (-not $cbDryRun.Checked) {
-            $answer = [System.Windows.Forms.MessageBox]::Show('确定开始迁移到 ' + $targetRoot + ' 吗？' + [Environment]::NewLine + '请确认已完全退出 Codex（或已勾选自动关闭）。', '确认', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
-            if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+        if (-not $script:CbDryRun.IsChecked) {
+            $answer = [System.Windows.MessageBox]::Show('确定开始迁移到 ' + $targetRoot + ' 吗？' + [Environment]::NewLine + '请确认已完全退出 Codex（或已勾选自动关闭）。', '确认', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Question)
+            if ($answer -ne [System.Windows.MessageBoxResult]::Yes) { return }
         }
         $args = '-TargetRoot "' + $targetRoot + '" -SourcesFile "' + $jsonPath + '"'
-        if (-not $cbBackup.Checked) { $args += ' -Backup:$false' }
-        if ($cbAutoClose.Checked) { $args += ' -AutoCloseYes' }
-        if ($cbDryRun.Checked) { $args += ' -DryRun' }
+        if (-not $script:CbBackup.IsChecked) { $args += ' -Backup:$false' }
+        if ($script:CbAutoClose.IsChecked) { $args += ' -AutoCloseYes' }
+        if ($script:CbDryRun.IsChecked) { $args += ' -DryRun' }
     } else {
-        $answer = [System.Windows.Forms.MessageBox]::Show('确定要从 ' + $targetRoot + ' 的最新备份恢复吗？', '确认', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
-        if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+        $answer = [System.Windows.MessageBox]::Show('确定要从 ' + $targetRoot + ' 的最新备份恢复吗？', '确认', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Question)
+        if ($answer -ne [System.Windows.MessageBoxResult]::Yes) { return }
         $args = '-TargetRoot "' + $targetRoot + '" -Restore'
     }
 
+    if ($TestMode) { $args += ' -SkipProcessCheck' }
+
+    $script:IsRestore = $AsRestore
+    $script:IsDryRun = [bool]$script:CbDryRun.IsChecked
     $script:running = $true
     Set-ControlsEnabled $false
-    Set-Status '运行中...'
-    $code = Invoke-Engine $args
-    $script:running = $false
-    Set-ControlsEnabled $true
-    if ($code -eq 0) {
-        Set-Status '完成'
-        if (-not $AsRestore -and -not $cbDryRun.Checked) {
-            [System.Windows.Forms.MessageBox]::Show('迁移完成。可以重新打开 Codex 了。' + [Environment]::NewLine + '备份保留在目标盘 _backup-* 文件夹中。', '完成', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
-        }
-    } else {
-        Set-Status '未完成，请查看日志'
-        [System.Windows.Forms.MessageBox]::Show('迁移未完成（退出码 ' + $code + '）。' + [Environment]::NewLine + '数据没有丢失，请查看日志。', '注意', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
-    }
+    Set-ProgressState $true
+    Set-Status '运行中…' 'run'
+    Invoke-EngineAsync -ArgumentList $args
 }
 
-$btnGo.Add_Click({ Start-Migration -AsRestore $false })
-$btnRestore.Add_Click({ Start-Migration -AsRestore $true })
-$btnExit.Add_Click({ $form.Close() })
-$btnRefresh.Add_Click({ Refresh-Sources })
-$btnAdd.Add_Click({
-    $p = $txtCustom.Text.Trim()
+function Init-UI {
+    Refresh-Sources
+    $script:DriveCombo.Items.Clear()
+    foreach ($d in (Get-FixedDrives)) { [void]$script:DriveCombo.Items.Add($d) }
+    $systemRoot = (Split-Path -Qualifier $env:SystemDrive).TrimEnd(':')
+    for ($i = 0; $i -lt $script:DriveCombo.Items.Count; $i++) {
+        if ($script:DriveCombo.Items[$i].Root.TrimEnd('\') -ne $systemRoot) { $script:DriveCombo.SelectedIndex = $i; break }
+    }
+    if ($script:DriveCombo.SelectedIndex -lt 0 -and $script:DriveCombo.Items.Count -gt 0) { $script:DriveCombo.SelectedIndex = 0 }
+    Update-RootPreview
+    Set-Status '就绪' 'ok'
+}
+
+# ---- SelfTest ----
+if ($SelfTest) {
+    Write-Host ('Codex Mover GUI v{0} - self test' -f $script:Version)
+    try {
+        Load-Window
+    } catch {
+        Write-Host ('FAIL: ' + $_.Exception.Message)
+        exit 1
+    }
+    Write-Host ('XAML    : {0}' -f $script:XamlPath)
+    Write-Host ('Engine  : {0}  exists={1}' -f $script:EnginePath, (Test-Path -LiteralPath $script:EnginePath))
+    Write-Host 'Controls:'
+    foreach ($n in $script:ControlNames) {
+        Write-Host ('  {0} = {1}' -f $n, ($null -ne $script:Window.FindName($n)))
+    }
+    Write-Host 'Sources:'
+    foreach ($s in (Get-DefaultSources)) { Write-Host ('  {0}  exists={1} junction={2} size={3}' -f $s.Path, $s.Exists, $s.IsJunction, $s.SizeMB) }
+    Write-Host 'Drives:'
+    foreach ($d in (Get-FixedDrives)) { Write-Host ('  {0}  free {1} GB / {2} GB' -f $d.Root, $d.FreeGB, $d.TotalGB) }
+    Write-Host 'Self test OK.'
+    exit 0
+}
+
+# ---- main ----
+try {
+    Load-Window
+} catch {
+    [System.Windows.MessageBox]::Show('GUI 初始化失败: ' + $_.Exception.Message, '错误', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error) | Out-Null
+    exit 1
+}
+
+$script:BtnGo.Add_Click({ Start-Migration -AsRestore $false })
+$script:BtnRestore.Add_Click({ Start-Migration -AsRestore $true })
+$script:BtnExit.Add_Click({ $script:Window.Close() })
+$script:BtnRefresh.Add_Click({ Refresh-Sources })
+$script:BtnAdd.Add_Click({
+    $p = $script:TxtCustom.Text.Trim()
     if (-not $p) { return }
     $item = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
     if (-not $item) {
-        [System.Windows.Forms.MessageBox]::Show('路径不存在: ' + $p, '提示', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+        [System.Windows.MessageBox]::Show('路径不存在: ' + $p, '提示', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning) | Out-Null
         return
     }
-    foreach ($existing in $script:srcList.Items) { if ($existing.Path -eq $p) { return } }
+    foreach ($existing in $script:SrcList.Items) { if ($existing.Tag.Path -eq $p) { return } }
     $name = Split-Path $p -Leaf
     if (-not $name) { $name = 'custom' }
     $bytes = (Get-ChildItem -LiteralPath $p -Recurse -Force -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
     $size = if ($bytes) { [math]::Round($bytes / 1MB, 1) } else { 0 }
     $obj = [PSCustomObject]@{ Path = $p; Name = $name; Exists = $true; IsJunction = $false; SizeMB = $size; Label = ('{0}   [{1} MB]' -f $p, $size) }
-    $obj | Add-Member -Force -MemberType ScriptMethod -Name ToString -Value { $this.Label }
-    $idx = $script:srcList.Items.Add($obj, $true)
-    $txtCustom.Clear()
+    [void]$script:SrcList.Items.Add((New-SourceCheckBox -Source $obj -Checked $true))
+    $script:TxtCustom.Clear()
 })
-$driveCombo.Add_SelectedIndexChanged({ Update-RootPreview })
-$folderBox.Add_TextChanged({ Update-RootPreview })
-$form.Add_FormClosing({
+$script:DriveCombo.Add_SelectionChanged({ Update-RootPreview })
+$script:FolderBox.Add_TextChanged({ Update-RootPreview })
+$script:Window.Add_Closing({
     param($s, $e)
     if ($script:running) { $e.Cancel = $true }
 })
+$script:Window.Add_Loaded({ Init-UI })
 
-$form.Add_Shown({
-    Refresh-Sources
-    foreach ($d in (Get-FixedDrives)) { $driveCombo.Items.Add($d) | Out-Null }
-    $systemRoot = (Split-Path -Qualifier $env:SystemDrive).TrimEnd(':')
-    for ($i = 0; $i -lt $driveCombo.Items.Count; $i++) {
-        if ($driveCombo.Items[$i].Root.TrimEnd('\') -ne $systemRoot) { $driveCombo.SelectedIndex = $i; break }
-    }
-    if ($driveCombo.SelectedIndex -lt 0 -and $driveCombo.Items.Count -gt 0) { $driveCombo.SelectedIndex = 0 }
-    Update-RootPreview
-})
-
-[System.Windows.Forms.Application]::Run($form)
+[void]$script:Window.ShowDialog()
 exit 0

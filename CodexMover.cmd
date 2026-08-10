@@ -3,7 +3,7 @@ setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
 echo ================================================
-echo   Codex Mover v1.1.0 - portable edition
+echo   Codex Mover v1.2.0 - portable edition
 echo   Move Codex data off a full drive to another disk
 echo ================================================
 echo.

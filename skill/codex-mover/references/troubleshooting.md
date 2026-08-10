@@ -67,3 +67,12 @@ moves all current and future project files to the destination drive.
 - All source paths show `LinkType : Junction` with targets on the destination drive.
 - The app launches and reads skills/sessions normally.
 - Item counts match between the live destination folder and the `_backup-*` snapshot.
+
+## The WPF GUI (CodexMover-GUI.cmd) does not start
+
+The GUI requires Windows PowerShell 5.1 and .NET Framework 4.x, both present on Windows 10/11.
+
+- Make sure `CodexMover-GUI.xaml` sits next to `CodexMover-GUI.ps1` (they ship in the same folder).
+- Launch `CodexMover-GUI.cmd` from Explorer or a console and read the error dialog/console output.
+- Do not modify the engine: the GUI only invokes `codex-mover.ps1` in a child process, so a GUI problem
+  never affects migration safety.
