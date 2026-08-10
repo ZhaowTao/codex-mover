@@ -280,24 +280,35 @@ function Invoke-EngineAsync {
         $timer = New-Object System.Windows.Threading.DispatcherTimer
         $timer.Interval = [TimeSpan]::FromMilliseconds(250)
         $timer.Add_Tick({
-            if ($script:EngineAsync -and $script:EngineAsync.IsCompleted) {
-                $timer.Stop()
-                $code = 0
-                try {
-                    $null = $script:EnginePS.EndInvoke($script:EngineAsync)
-                } catch {
-                    $code = 1
-                    Append-Log ('[ERR] 引擎异常: ' + $_.Exception.Message)
-                    Write-DebugLog ('engine EXCEPTION: ' + $_.Exception.Message)
+            param($sender, $e)
+            try {
+                if ($script:EngineAsync -and $script:EngineAsync.IsCompleted) {
+                    try { $sender.Stop() } catch { }
+                    $code = 0
+                    try {
+                        $null = $script:EnginePS.EndInvoke($script:EngineAsync)
+                    } catch {
+                        $code = 1
+                        Append-Log ('[ERR] 引擎异常: ' + $_.Exception.Message)
+                        Write-DebugLog ('engine EXCEPTION: ' + $_.Exception.Message)
+                    }
+                    # engine uses `exit N` for failures; derive the outcome from its summary too
+                    $logTail = ''
+                    if ($script:LogBox) { $logTail = $script:LogBox.Text }
+                    if ($logTail -match 'Some items failed|FAILED:|ABORT:') { $code = 1 }
+                    elseif ($logTail -match 'All done\.|Dry run - no changes were made\.') { $code = 0 }
+                    Write-DebugLog ("engine finished, code={0}" -f $code)
+                    $script:EngineAsync = $null
+                    Complete-Run -ExitCode $code
                 }
-                # engine uses `exit N` for failures; derive the outcome from its summary too
-                $logTail = ''
-                if ($script:LogBox) { $logTail = $script:LogBox.Text }
-                if ($logTail -match 'Some items failed|FAILED:|ABORT:') { $code = 1 }
-                elseif ($logTail -match 'All done\.|Dry run - no changes were made\.') { $code = 0 }
-                Write-DebugLog ("engine finished, code={0}" -f $code)
-                $script:EngineAsync = $null
-                Complete-Run -ExitCode $code
+            } catch {
+                # never leave the window stuck in "running" state
+                Write-DebugLog ('timer tick EXCEPTION: ' + $_.Exception.Message)
+                try { $sender.Stop() } catch { }
+                $script:running = $false
+                try { Set-ControlsEnabled $true } catch { }
+                try { Set-ProgressState $false } catch { }
+                Set-Status '未完成，请查看日志' 'err'
             }
         })
         $timer.Start()

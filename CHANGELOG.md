@@ -9,6 +9,7 @@
 - 运行中 UI 不冻结：异步子进程 + 日志实时流式回显，新增运行进度条与语义状态徽章（就绪/运行中/完成/未完成）。
 - 修复演练模式闪退：异步进程事件竞态处理、全局异常兜底、崩溃日志写入 `%TEMP%\codexmover-crash-*.log`。
 - **彻底修复“点开始后窗口消失”**：改为在 GUI 进程内用 PowerShell runspace 直接运行引擎，不再创建隐藏的 powershell 子进程（部分安全软件会拦截/结束这种子进程，导致窗口被悄悄关闭）。引擎输出仍实时流式回显。
+- 修复完成回调中计时器变量为空导致的 `$timer.Stop()` 报错（改用事件发送者），并保证任何异常都不会让窗口卡在“运行中”。
 - 演练模式自动跳过进程检查：Codex 开着也能直接预览计划，无需关闭应用或使用命令行。
 - 新增品牌资产：应用图标（`assets/codex-mover-icon.png`、`assets/app-icon.ico`）与 README banner。
 - 新增 `-TestMode`（仅开发/测试用：向引擎传递 `-SkipProcessCheck`）。
@@ -20,6 +21,7 @@
 - Streaming logs with async process events; added an indeterminate progress bar and semantic status chip.
 - Fixed the dry-run crash: async event race handled, global exception fallback added, crash logs written to `%TEMP%\codexmover-crash-*.log`.
 - **Fixed "window disappears after Start"**: the engine now runs in-process via a PowerShell runspace instead of a hidden powershell.exe child process (security software on some machines kills such child processes, silently closing the GUI). Output still streams live.
+- Fixed the `$timer.Stop()` null error in the completion callback (use the event sender), and made sure an unexpected error can never leave the window stuck in "running" state.
 - Dry-run now skips the process check automatically, so it works while Codex is open.
 - Brand assets: app icon (PNG/ICO) and README banner.
 - Added `-TestMode` (developer-only: forwards `-SkipProcessCheck` to the engine).
