@@ -4,27 +4,27 @@
         Width="880" Height="800" MinWidth="780" MinHeight="680"
         WindowStartupLocation="CenterScreen"
         ResizeMode="CanResize"
-        Background="#121212"
+        Background="#F7F7F8"
         FontFamily="Segoe UI Variable, Microsoft YaHei UI"
         TextOptions.TextFormattingMode="Display"
         UseLayoutRounding="True"
         SnapsToDevicePixels="True">
     <Window.Resources>
-        <!-- Dawn theme tokens -->
-        <SolidColorBrush x:Key="BgBrush" Color="#121212"/>
-        <SolidColorBrush x:Key="CardBrush" Color="#1B1B1D"/>
-        <SolidColorBrush x:Key="CardBorderBrush" Color="#2A2A2C"/>
-        <SolidColorBrush x:Key="HoverBrush" Color="#262629"/>
+        <!-- Dawn light theme tokens (ChatGPT / Apple style with dawn accents) -->
+        <SolidColorBrush x:Key="BgBrush" Color="#F7F7F8"/>
+        <SolidColorBrush x:Key="CardBrush" Color="#FFFFFF"/>
+        <SolidColorBrush x:Key="CardBorderBrush" Color="#E4E4E7"/>
+        <SolidColorBrush x:Key="HoverBrush" Color="#EFEFF1"/>
         <SolidColorBrush x:Key="AccentBrush" Color="#4F8CFF"/>
         <SolidColorBrush x:Key="AccentHoverBrush" Color="#6BA1FF"/>
         <SolidColorBrush x:Key="AccentPressedBrush" Color="#3B78E8"/>
-        <SolidColorBrush x:Key="InputBgBrush" Color="#0D0D0F"/>
-        <SolidColorBrush x:Key="TextPrimaryBrush" Color="#F5F5F7"/>
-        <SolidColorBrush x:Key="TextSecondaryBrush" Color="#9B9BA1"/>
-        <SolidColorBrush x:Key="SuccessBrush" Color="#34D399"/>
-        <SolidColorBrush x:Key="DangerBrush" Color="#F87171"/>
-        <SolidColorBrush x:Key="WarnBrush" Color="#FBBF24"/>
-        <SolidColorBrush x:Key="DisabledBrush" Color="#3A3A3C"/>
+        <SolidColorBrush x:Key="InputBgBrush" Color="#FFFFFF"/>
+        <SolidColorBrush x:Key="TextPrimaryBrush" Color="#1D1D1F"/>
+        <SolidColorBrush x:Key="TextSecondaryBrush" Color="#6E6E73"/>
+        <SolidColorBrush x:Key="SuccessBrush" Color="#34C759"/>
+        <SolidColorBrush x:Key="DangerBrush" Color="#FF3B30"/>
+        <SolidColorBrush x:Key="WarnBrush" Color="#FF9500"/>
+        <SolidColorBrush x:Key="DisabledBrush" Color="#D1D1D6"/>
         <LinearGradientBrush x:Key="DawnGradientBrush" StartPoint="0,0" EndPoint="1,1">
             <GradientStop Color="#FFB27A" Offset="0"/>
             <GradientStop Color="#4F8CFF" Offset="1"/>
@@ -172,7 +172,7 @@
                 <TextBlock Text="图形向导 v1.2.0 · 把 Codex 数据和工作区安全迁移到其他磁盘" FontSize="12" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,5,0,0"/>
             </StackPanel>
             <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                <Border x:Name="StatusChip" Background="#2634D399" CornerRadius="10" Padding="12,5">
+                <Border x:Name="StatusChip" Background="#1A34C759" CornerRadius="10" Padding="12,5">
                     <TextBlock x:Name="StatusText" Text="就绪" FontSize="12" FontWeight="SemiBold" Foreground="{StaticResource SuccessBrush}"/>
                 </Border>
             </StackPanel>
@@ -244,6 +244,7 @@
                                 <CheckBox x:Name="CbDryRun" Style="{StaticResource OptionCheckBoxStyle}" Content="演练模式（不修改任何东西）" Margin="0,4,24,4"/>
                                 <CheckBox x:Name="CbAutoClose" Style="{StaticResource OptionCheckBoxStyle}" Content="自动关闭正在运行的 Codex"/>
                             </WrapPanel>
+                            <TextBlock Style="{StaticResource HintTextStyle}" Text="提示：演练模式只预览计划、不修改任何东西，也不需要先关闭 Codex。" Margin="0,6,0,0"/>
                         </StackPanel>
                     </Border>
                 </StackPanel>
@@ -269,7 +270,7 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <TextBlock Text="运行日志" FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}"/>
-                <ProgressBar x:Name="ProgressBar" Grid.Column="1" Width="170" Height="6" IsIndeterminate="True" Visibility="Collapsed" Background="{StaticResource CardBrush}" Foreground="{StaticResource DawnGradientBrush}" BorderThickness="0"/>
+                <ProgressBar x:Name="ProgressBar" Grid.Column="1" Width="170" Height="6" IsIndeterminate="True" Visibility="Collapsed" Background="#E9E9EC" Foreground="{StaticResource DawnGradientBrush}" BorderThickness="0"/>
             </Grid>
             <TextBox x:Name="LogBox" Grid.Row="1" Margin="0,8,0,0" IsReadOnly="True" TextWrapping="NoWrap"
                      VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"

@@ -30,12 +30,12 @@ Move Codex data and workspace folders off a full C: drive to another drive. Orig
 
 ### 图形向导（推荐）/ GUI wizard
 
-WPF 图形向导（Dawn 极简深色界面，v1.2.0）:
+WPF 图形向导（Dawn 浅色界面，v1.2.0）:
 
-1. 完全退出 Codex（含系统托盘图标）。
-2. 双击 `CodexMover-GUI.cmd`。
-3. 勾选要迁移的目录、选择目标盘，按需勾选“自动关闭 Codex”，点击“开始迁移”。
-4. 运行日志实时滚动，右上角状态徽章变绿“完成”后重新打开 Codex。
+1. 双击 `CodexMover-GUI.cmd` 启动向导。
+2. 勾选要迁移的目录、选择目标盘。
+3. 正式迁移前需完全退出 Codex（含托盘图标）；只想预览的话勾选“演练模式”即可，无需关闭 Codex。
+4. 点击“开始迁移”，日志实时滚动；右上角状态徽章变绿“完成”后重新打开 Codex。
 
 ### 命令行 / Console
 

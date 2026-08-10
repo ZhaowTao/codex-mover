@@ -245,25 +245,39 @@ function Invoke-EngineAsync {
     $proc.EnableRaisingEvents = $true
     $outEvt = {
         param($s, $e)
-        if ($e.Data) { Append-Log $e.Data }
+        try {
+            if ($e.Data) { Append-Log $e.Data }
+        } catch { }
     }
     $errEvt = {
         param($s, $e)
-        if ($e.Data) { Append-Log ('[ERR] ' + $e.Data) }
+        try {
+            if ($e.Data) { Append-Log ('[ERR] ' + $e.Data) }
+        } catch { }
     }
     $exitEvt = {
-        $code = $script:EngineProcess.ExitCode
-        $script:Window.Dispatcher.Invoke([Action[int]]{
-            param($c)
-            Complete-Run -ExitCode $c
-        }, $code) | Out-Null
+        try {
+            $code = -1
+            try {
+                $proc.WaitForExit()
+                $code = $proc.ExitCode
+            } catch {
+                $code = -1
+            }
+            if ($script:Window) {
+                $script:Window.Dispatcher.Invoke([Action[int]]{
+                    param($c)
+                    Complete-Run -ExitCode $c
+                }, $code) | Out-Null
+            }
+        } catch { }
     }
     $proc.add_OutputDataReceived($outEvt)
     $proc.add_ErrorDataReceived($errEvt)
     $proc.add_Exited($exitEvt)
     try {
-        [void]$proc.Start()
         $script:EngineProcess = $proc
+        [void]$proc.Start()
         $proc.BeginOutputReadLine()
         $proc.BeginErrorReadLine()
     } catch {
@@ -277,49 +291,56 @@ function Invoke-EngineAsync {
 
 function Start-Migration {
     param([bool]$AsRestore)
-    if ($script:running) { return }
-    if (-not (Test-Path -LiteralPath $script:EnginePath)) {
-        [System.Windows.MessageBox]::Show('找不到引擎脚本 codex-mover.ps1', '错误', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error) | Out-Null
-        return
-    }
-    $root = ''
-    if ($script:DriveCombo.SelectedItem) { $root = $script:DriveCombo.SelectedItem.Root.TrimEnd('\') }
-    $folder = $script:FolderBox.Text.Trim()
-    if (-not $root -or -not $folder) {
-        [System.Windows.MessageBox]::Show('请先选择目标盘并填写文件夹名', '提示', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning) | Out-Null
-        return
-    }
-    $targetRoot = '{0}\{1}' -f $root, $folder
-
-    if (-not $AsRestore) {
-        $jsonPath = Build-SourcesFile
-        if (-not $jsonPath) {
-            [System.Windows.MessageBox]::Show('请至少勾选一个要迁移的目录', '提示', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning) | Out-Null
+    try {
+        if ($script:running) { return }
+        if (-not (Test-Path -LiteralPath $script:EnginePath)) {
+            [System.Windows.MessageBox]::Show('找不到引擎脚本 codex-mover.ps1', '错误', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error) | Out-Null
             return
         }
-        if (-not $script:CbDryRun.IsChecked) {
-            $answer = [System.Windows.MessageBox]::Show('确定开始迁移到 ' + $targetRoot + ' 吗？' + [Environment]::NewLine + '请确认已完全退出 Codex（或已勾选自动关闭）。', '确认', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Question)
-            if ($answer -ne [System.Windows.MessageBoxResult]::Yes) { return }
+        $root = ''
+        if ($script:DriveCombo.SelectedItem) { $root = $script:DriveCombo.SelectedItem.Root.TrimEnd('\') }
+        $folder = $script:FolderBox.Text.Trim()
+        if (-not $root -or -not $folder) {
+            [System.Windows.MessageBox]::Show('请先选择目标盘并填写文件夹名', '提示', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning) | Out-Null
+            return
         }
-        $args = '-TargetRoot "' + $targetRoot + '" -SourcesFile "' + $jsonPath + '"'
-        if (-not $script:CbBackup.IsChecked) { $args += ' -Backup:$false' }
-        if ($script:CbAutoClose.IsChecked) { $args += ' -AutoCloseYes' }
-        if ($script:CbDryRun.IsChecked) { $args += ' -DryRun' }
-    } else {
-        $answer = [System.Windows.MessageBox]::Show('确定要从 ' + $targetRoot + ' 的最新备份恢复吗？', '确认', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Question)
-        if ($answer -ne [System.Windows.MessageBoxResult]::Yes) { return }
-        $args = '-TargetRoot "' + $targetRoot + '" -Restore'
+        $targetRoot = '{0}\{1}' -f $root, $folder
+
+        if (-not $AsRestore) {
+            $jsonPath = Build-SourcesFile
+            if (-not $jsonPath) {
+                [System.Windows.MessageBox]::Show('请至少勾选一个要迁移的目录', '提示', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning) | Out-Null
+                return
+            }
+            if (-not $script:CbDryRun.IsChecked) {
+                $answer = [System.Windows.MessageBox]::Show('确定开始迁移到 ' + $targetRoot + ' 吗？' + [Environment]::NewLine + '请确认已完全退出 Codex（或已勾选自动关闭）。', '确认', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Question)
+                if ($answer -ne [System.Windows.MessageBoxResult]::Yes) { return }
+            }
+            $args = '-TargetRoot "' + $targetRoot + '" -SourcesFile "' + $jsonPath + '"'
+            if (-not $script:CbBackup.IsChecked) { $args += ' -Backup:$false' }
+            if ($script:CbAutoClose.IsChecked) { $args += ' -AutoCloseYes' }
+            if ($script:CbDryRun.IsChecked) { $args += ' -DryRun -SkipProcessCheck' }
+        } else {
+            $answer = [System.Windows.MessageBox]::Show('确定要从 ' + $targetRoot + ' 的最新备份恢复吗？', '确认', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Question)
+            if ($answer -ne [System.Windows.MessageBoxResult]::Yes) { return }
+            $args = '-TargetRoot "' + $targetRoot + '" -Restore'
+        }
+
+        if ($TestMode) { $args += ' -SkipProcessCheck' }
+
+        $script:IsRestore = $AsRestore
+        $script:IsDryRun = [bool]$script:CbDryRun.IsChecked
+        $script:running = $true
+        Set-ControlsEnabled $false
+        Set-ProgressState $true
+        Set-Status '运行中…' 'run'
+        Invoke-EngineAsync -ArgumentList $args
+    } catch {
+        $script:running = $false
+        try { Set-ControlsEnabled $true } catch { }
+        try { Set-ProgressState $false } catch { }
+        [System.Windows.MessageBox]::Show('操作失败: ' + $_.Exception.Message, '错误', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error) | Out-Null
     }
-
-    if ($TestMode) { $args += ' -SkipProcessCheck' }
-
-    $script:IsRestore = $AsRestore
-    $script:IsDryRun = [bool]$script:CbDryRun.IsChecked
-    $script:running = $true
-    Set-ControlsEnabled $false
-    Set-ProgressState $true
-    Set-Status '运行中…' 'run'
-    Invoke-EngineAsync -ArgumentList $args
 }
 
 function Init-UI {
@@ -365,6 +386,28 @@ try {
     [System.Windows.MessageBox]::Show('GUI 初始化失败: ' + $_.Exception.Message, '错误', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error) | Out-Null
     exit 1
 }
+
+# Global safety net: never let an unhandled exception silently kill the window.
+try {
+    [System.Windows.Application]::Current.add_DispatcherUnhandledException({
+        param($s, $e)
+        try {
+            $log = Join-Path $env:TEMP ('codexmover-crash-{0}.log' -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+            Add-Content -LiteralPath $log -Value ('UI EXCEPTION: ' + $e.Exception.ToString()) -Encoding UTF8
+            [System.Windows.MessageBox]::Show('界面遇到错误，详情已保存到: ' + $log, 'Codex Mover', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error) | Out-Null
+        } catch { }
+        $e.Handled = $true
+    })
+} catch { }
+try {
+    [AppDomain]::CurrentDomain.add_UnhandledException({
+        param($s, $e)
+        try {
+            $log = Join-Path $env:TEMP ('codexmover-crash-{0}.log' -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+            Add-Content -LiteralPath $log -Value ('FATAL: ' + $e.ExceptionObject.ToString()) -Encoding UTF8
+        } catch { }
+    })
+} catch { }
 
 $script:BtnGo.Add_Click({ Start-Migration -AsRestore $false })
 $script:BtnRestore.Add_Click({ Start-Migration -AsRestore $true })
