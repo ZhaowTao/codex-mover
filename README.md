@@ -85,6 +85,38 @@ install-skill-from-github.py --repo ZhaowTao/codex-mover-skill --path codex-move
 - 迁移中断后可能出现 `*.pre-migration-*` 残留目录，不影响使用；重启后可删除，或由后续运行自动清理。
 - GUI 需要 Windows PowerShell 5.1 与 .NET Framework 4.x（Windows 10/11 自带）。
 
+## 已知不适用场景 / Known limitations
+
+下面这些情况**不要**直接迁移，先看最后一列怎么绕。
+
+| 场景 | 为什么不行 | 怎么办 |
+| --- | --- | --- |
+| 目标盘是 exFAT 或 FAT32（多数移动硬盘、U 盘的默认格式） | 目录联结点只能在 NTFS 上创建，`mklink /J` 会直接报错 | 把目标盘格式化成 NTFS，或改用 `CODEX_HOME` 方案 |
+| 目标盘是外接盘、U 盘或网络盘 | 盘一拔，C 盘那个联结点就指向空气，Codex 启动报找不到目录 | 换成内置硬盘的另一个分区 |
+| 公司电脑被组策略禁用符号链接 | 创建联结点返回拒绝访问，非管理员也过不去 | 让 IT 放开策略，否则改用 `CODEX_HOME` |
+| Codex 还在运行（包括托盘图标没退） | 文件被占用，复制会漏文件，后面的校验必然失败 | 完全退出，任务管理器里确认没有 Codex 相关进程 |
+| 目标盘剩余空间不足源数据的两倍 | 迁移过程中源数据和备份会同时存在，中途耗尽会触发回滚 | 先腾空间，留出源数据两倍的余量 |
+| 目标路径下已经有同名目录 | 工具会拒绝覆盖，避免误删你已有的数据 | 换一个空目录，或先把旧目录移走 |
+
+## 遇到问题 / Something broke
+
+迁移动的是目录联接和真实文件，**出问题请直接提 issue，不要自己硬删残留目录**，容易把回滚要用的备份一起删掉。
+
+[提交问题 →](https://github.com/ZhaowTao/codex-mover/issues/new?template=bug_report.md)
+
+提之前先确认两件事：场景不在上面的「已知不适用场景」里；目标盘根目录的 `migration-<时间戳>.log` 还在。
+
+| 要提供什么 | 怎么拿到 |
+| --- | --- |
+| Windows 版本 | `winver`，或 设置 → 系统 → 关于 |
+| PowerShell 版本 | `$PSVersionTable.PSVersion` |
+| Codex 版本 | 应用内关于页，或 `codex --version` |
+| 卡在哪一步 | GUI 右上角状态徽章，加日志最后 20 行 |
+| 报错截图 | 有红字的那一屏 |
+| 目标盘文件系统 | `Get-Volume -DriveLetter G \| Format-List FileSystem` |
+
+日志里会带你的用户名和本地路径，贴之前把 `C:\Users\你的名字` 这类替换掉。
+
 ## 许可 / License
 
 MIT
